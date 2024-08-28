@@ -1,0 +1,153 @@
+---
+- name: Manage VirtualBox VM and execute commands
+  hosts: localhost
+  become: true  # Ensure that the playbook runs with elevated privileges for package installation
+  tasks:
+
+    - name: Check if the VM is running
+      local_action: 
+        module: shell
+        args:
+          cmd: "/mnt/c/Program\\ Files/Oracle/VirtualBox/VBoxManage.exe showvminfo 'ubold' --machinereadable | grep -c 'VMState=\"running\"'"
+      register: vm_running
+      failed_when: vm_running.rc > 1  # Fail the task only if there is a severe error
+
+    - name: Set VM status
+      set_fact:
+        vm_is_running: "{{ vm_running.stdout | int == 1 }}"
+
+    - name: Display the status of the VM
+      ansible.builtin.debug:
+        var: vm_running.stdout
+
+    - name: Power on the VM if it is not running
+      local_action: 
+        module: shell
+        args:
+          cmd: "/mnt/c/Program\\ Files/Oracle/VirtualBox/VBoxManage.exe startvm 'ubold' --type headless"
+      when: not vm_is_running
+
+    - name: Wait for 45 seconds for the VM to boot
+      pause:
+        seconds: 45
+      when: not vm_is_running
+
+    - name: Get the IP address of the VM
+      local_action: 
+        module: shell
+        args:
+          cmd: "/mnt/c/Program\\ Files/Oracle/VirtualBox/VBoxManage.exe guestproperty get 'ubold' '/VirtualBox/GuestInfo/Net/0/V4/IP'"
+      register: vm_ip
+      failed_when: vm_ip.rc != 0
+
+    - name: Set VM IP address
+      set_fact:
+        vm_ip_address: "{{ vm_ip.stdout.split()[-1] }}"
+
+    - name: Update inventory with VM IP
+      add_host:
+        name: "unold"
+        ansible_host: "{{ vm_ip_address }}"
+        ansible_user: "ubold"
+        ansible_password: "somepassword"
+        ansible_ssh_common_args: '-o PubkeyAuthentication=no -o StrictHostKeyChecking=no'
+
+    - name: Check network connectivity
+      wait_for:
+        host: "{{ vm_ip_address }}"
+        port: 22
+        timeout: 30
+      register: network_check
+      retries: 3
+      delay: 5
+      until: network_check is succeeded
+      ignore_errors: yes
+      
+    - name: Log network connectivity failure
+      ansible.builtin.debug:
+        msg: "Network connectivity check failed after 3 retries."
+      when: network_check is failed
+        
+    - name: Ping to check
+      ansible.builtin.shell: ping -c 5 8.8.8.8
+      register: ping_output
+
+    - name: Show ping output
+      ansible.builtin.debug:
+        var: ping_output.stdout
+
+    - name: Check if net-tools is installed
+      ansible.builtin.shell: dpkg -l | grep net-tools || true
+      register: net_tools_check
+      ignore_errors: yes
+
+    - name: Install net-tools if not installed
+      ansible.builtin.apt:
+        name: net-tools
+        state: present
+      when: net_tools_check.stdout == ""
+
+    - name: Show net-tools status
+      ansible.builtin.debug:
+        var: net_tools_check.stdout
+
+#    - name: Check the ip by ifconfig
+#      ansible.builtin.shell: ifconfig
+#      register: ifconfig_output
+
+#    - name: Display ifconfig output
+#      ansible.builtin.debug:
+#        var: ifconfig_output.stdout
+
+# they both work, 
+# but the first doesn't handle the failure of ifconfig & then, the playbook
+
+    - name: Check the ip by ifconfig
+      ansible.builtin.shell: |
+        ifconfig || ip addr
+      register: ifconfig_output
+      ignore_errors: yes
+    
+    - name: Display ifconfig output
+      ansible.builtin.debug:
+        msg: "{{ ifconfig_output.stdout | default('No output from ifconfig command') }}"
+
+
+    - name: Get CPU usage
+      shell: "top -bn1 | grep 'Cpu(s)' | sed 's/.*, *\\([0-9.]*\\)%* id.*/\\1/' | awk '{print 100 - $1}'"
+      register: cpu_usage
+
+    - name: Show CPU usage
+      debug:
+        msg: "CPU Usage: {{ cpu_usage.stdout }}%"
+
+    - name: Get memory usage
+      shell: "free -m | awk 'NR==2{printf \"Memory Usage: %.2f%%\", $3*100/$2 }'"
+      register: memory_usage
+
+    - name: Show memory usage
+      debug:
+        msg: "{{ memory_usage.stdout }}"
+
+    - name: Get disk usage
+      shell: "df -h | grep '^/dev/' | awk '{ print $5 \" used on \" $1 }'"
+      register: disk_usage
+
+    - name: Show disk usage
+      debug:
+        msg: "{{ disk_usage.stdout_lines }}"
+
+    - name: Get network status
+      shell: "ping -c 1 8.8.8.8 && echo 'Network is up' || echo 'Network is down'"
+      register: network_status
+
+    - name: Show network status
+      debug:
+        msg: "{{ network_status.stdout }}"
+        
+
+    - name: Power off the VM
+      local_action: 
+        module: shell
+        args:
+          cmd: "/mnt/c/Program\\ Files/Oracle/VirtualBox/VBoxManage.exe controlvm 'ubold' poweroff"
